@@ -76,6 +76,13 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             guard let observations = request.results else {
                 return
             }
+            
+            if observations.isEmpty {
+                DispatchQueue.main.async {
+                    self.overlayLayer.path = nil
+                }
+                return
+            }
 
             for observation in observations {
                 if let recognizedPoints = try? observation.recognizedPoints(.all) {
