@@ -2,10 +2,19 @@ import UIKit
 import AVFoundation
 import Vision
 
+enum SkeletonStyle {
+    case pointsOnly
+    case linesOnly
+    case full
+}
+
 class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let captureSession = AVCaptureSession()
+    
+    private var pointLayers: [CAShapeLayer] = []
     private var previewLayer: AVCaptureVideoPreviewLayer!
     private var overlayLayer = CAShapeLayer()
+    private var currentStyle: SkeletonStyle = .pointsOnly
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -13,6 +22,28 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         overlayLayer.strokeColor = UIColor.systemRed.cgColor
         overlayLayer.fillColor = UIColor.systemRed.cgColor
         setupCamera()
+        
+        let styleControl = UISegmentedControl(items: ["Точки", "Скелет"])
+        styleControl.selectedSegmentIndex = 0
+        styleControl.addTarget(self, action: #selector(styleChanged(_:)), for: .valueChanged)
+        styleControl.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(styleControl)
+
+        NSLayoutConstraint.activate([
+            styleControl.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            styleControl.centerXAnchor.constraint(equalTo: view.centerXAnchor)
+        ])
+    }
+    
+    @objc private func styleChanged(_ sender: UISegmentedControl) {
+        switch sender.selectedSegmentIndex {
+        case 0:
+            currentStyle = .pointsOnly
+        case 1:
+            currentStyle = .linesOnly
+        default:
+            break
+        }
     }
     
     private func setupCamera() {
@@ -79,13 +110,16 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
             
             if observations.isEmpty {
                 DispatchQueue.main.async {
-                    self.overlayLayer.path = nil
+                    self.pointLayers.forEach{$0.removeFromSuperlayer()}
+                    self.pointLayers.removeAll()
                 }
                 return
             }
 
             for observation in observations {
-                if let recognizedPoints = try? observation.recognizedPoints(.all) {
+                if let recognizedPoints = try? observation.recognizedPoints(
+                    .all
+                ) {
                     drawSkeleton(from: recognizedPoints)
                 }
             }
@@ -100,23 +134,85 @@ class CameraViewController: UIViewController, AVCaptureVideoDataOutputSampleBuff
         return CGPoint(x: x, y: y)
     }
     
+    private func clearLayers() {
+        self.pointLayers.forEach { $0.removeFromSuperlayer() }
+        self.pointLayers.removeAll()
+    }
+    
     private func drawSkeleton(from points: [VNHumanBodyPoseObservation.JointName: VNRecognizedPoint]) {
         DispatchQueue.main.async {
-            let path = UIBezierPath()
+            self.clearLayers()
 
-            for (_, point) in points {
-                guard point.confidence > 0.3 else { continue }
+            switch self.currentStyle {
+            case .pointsOnly:
+                for (_, point) in points {
+                    guard point.confidence > 0.1 else { continue }
+                    let position = self.convertPoint(point)
+                    let radius: CGFloat = 6.0
+                    let circleRect = CGRect(x: position.x - radius,
+                                            y: position.y - radius,
+                                            width: radius * 2,
+                                            height: radius * 2)
+                    let path = UIBezierPath(ovalIn: circleRect)
 
-                let position = self.convertPoint(point)
-                let radius: CGFloat = 6.0
-                let circle = UIBezierPath(ovalIn: CGRect(x: position.x - radius,
-                                                         y: position.y - radius,
-                                                         width: radius * 2,
-                                                         height: radius * 2))
-                path.append(circle)
+                    let layer = CAShapeLayer()
+                    layer.path = path.cgPath
+                    layer.fillColor = self.color(for: point.confidence).cgColor
+
+                    self.view.layer.addSublayer(layer)
+                    self.pointLayers.append(layer)
+                }
+
+            case .linesOnly:
+                let connections: [(VNHumanBodyPoseObservation.JointName, VNHumanBodyPoseObservation.JointName)] = [
+                    (.leftShoulder, .rightShoulder),
+                    (.leftHip, .rightHip),
+                    (.neck, .root),
+                    (.leftShoulder, .leftElbow),
+                    (.leftElbow, .leftWrist),
+                    (.rightShoulder, .rightElbow),
+                    (.rightElbow, .rightWrist),
+                    (.leftHip, .leftKnee),
+                    (.leftKnee, .leftAnkle),
+                    (.rightHip, .rightKnee),
+                    (.rightKnee, .rightAnkle)
+                ]
+
+                for (jointA, jointB) in connections {
+                    guard let pointA = points[jointA], let pointB = points[jointB],
+                          pointA.confidence > 0.1, pointB.confidence > 0.1 else { continue }
+
+                    let posA = self.convertPoint(pointA)
+                    let posB = self.convertPoint(pointB)
+
+                    let path = UIBezierPath()
+                    path.move(to: posA)
+                    path.addLine(to: posB)
+
+                    let layer = CAShapeLayer()
+                    layer.path = path.cgPath
+                    layer.strokeColor = UIColor.systemGreen.cgColor
+                    layer.lineWidth = 4.0
+
+                    self.view.layer.addSublayer(layer)
+                    self.pointLayers.append(layer)
+                }
+
+            case .full:
+                //
+                break
             }
-
-            self.overlayLayer.path = path.cgPath
+        }
+    }
+    
+    private func color(for confidence: Float) -> UIColor {
+        switch confidence {
+        case let c where c > 0.6:
+            return .systemGreen
+        case let c where c > 0.4:
+            return .systemYellow
+        default:
+            return .systemRed
         }
     }
 }
